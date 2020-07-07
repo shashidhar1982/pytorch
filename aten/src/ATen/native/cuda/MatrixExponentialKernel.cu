@@ -7,6 +7,7 @@ namespace at { namespace native {
 namespace {
 
 void matrix_exp_cuda_kernel(Tensor& res, const Tensor& a) {
+  const auto& norm = operator_1_norm(a);
 }
 
 }

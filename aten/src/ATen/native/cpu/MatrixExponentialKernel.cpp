@@ -45,10 +45,6 @@ Tensor matrix_power(const Tensor& matrices, const Tensor& powers) {
   }
 }
 
-Tensor operator_1_norm(const Tensor& tensor) {
-  return std::get<0>(tensor.abs().sum(-2).max(-1));
-}
-
 Tensor compute_T1(const Tensor& A) {
   const auto& I = at::eye(A.size(-1), A.options()).expand_as(A);
   return I + A;
