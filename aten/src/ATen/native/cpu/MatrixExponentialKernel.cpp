@@ -235,7 +235,9 @@ Tensor mexp_impl(const Tensor& a, std::array<scalar_t, total_n_degs> thetas) {
 
 // matrix exponential
 Tensor mexp(const Tensor& a) {
-  if (a.scalar_type() == at::ScalarType::Float) {
+  if (a.scalar_type() == at::ScalarType::Float
+    || a.scalar_type() == at::ScalarType::ComplexFloat
+  ) {
     constexpr std::array<float, total_n_degs> thetas_float = {
       1.192092800768788e-07, // deg 1
       5.978858893805233e-04, // deg 2
@@ -246,7 +248,7 @@ Tensor mexp(const Tensor& a) {
     };
     return mexp_impl<float>(a, thetas_float);
   }
-  else { // if Double
+  else { // if Double or ComplexDouble
     constexpr std::array<double, total_n_degs> thetas_double = {
       2.220446049250313e-16, // deg 1
       2.580956802971767e-08, // deg 2
