@@ -4,6 +4,7 @@
 
 #include <ATen/core/functional.h>
 #include <torch/csrc/distributed/c10d/reducer.h>
+#include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/utils/tensor_flatten.h>
 
 namespace c10d {
@@ -79,4 +80,29 @@ void broadcast_coalesced(
   }
 }
 
+GradBucket::GradBucket(std::vector<at::Tensor>& tensors) : tensors_(tensors){};
+
+std::vector<at::Tensor> GradBucket::get_tensors() {
+  return tensors_;
+};
+
+PythonCommHook::PythonCommHook(py::object state, py::object hook)
+    : state_(std::move(state)), hook_(std::move(hook)){};
+c10::intrusive_ptr<torch::jit::Future> PythonCommHook::operate(
+    const GradBucket& bucket) {
+  py::gil_scoped_acquire acquire;
+
+  c10::intrusive_ptr<torch::jit::Future> fut;
+  return hook_(state_, bucket)
+      .cast<std::shared_ptr<torch::jit::PythonFutureWrapper>>()
+      ->fut;
+};
+std::vector<at::Tensor> PythonCommHook::process_future(
+    c10::IValue future_value) {
+  py::object obj =
+      py::reinterpret_borrow<py::object>(future_value.toPyObject());
+  auto value =
+      torch::jit::toIValue(obj, c10::ListType::create(c10::TensorType::get()));
+  return value.toTensorVector();
+}
 } // namespace c10d

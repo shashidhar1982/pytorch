@@ -161,6 +161,8 @@ Reducer::Reducer(
       }
     }
   }
+
+  comm_hook_.reset();
 }
 
 // Note [Skip allreducing local_used_maps_dev]
@@ -169,6 +171,17 @@ Reducer::Reducer(
 // local_used_maps_dev_, because all parameters will be reduced anyway.
 // Therefore, we can avoid allocating memory for local_used_maps and
 // local_used_maps_dev_ if find_unused_parameters_ is false.
+
+// Note [DDP Communication Hook]
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~
+// If DDP communication hook is not registered, the reducer reduces the buckets
+// by just calling allreduce. If registered, it calls the hook and uses future
+// work handle.
+// DDP communication hook is an enhancement that provides a hook which can be
+// used to implement various Gradient Compression algorithms. This hook can be
+// registered from Python API using `register_comm_hook`. `PythonCommHook` is a
+// sub class of `CommHookInterface` to enable `CppCommHook` registration in the
+// future.
 
 Reducer::~Reducer() noexcept(false) {
   // Remove all hooks on variables registered by this Reducer. This is necessary
@@ -575,7 +588,12 @@ void Reducer::mark_bucket_ready(size_t bucket_index) {
       //
       tensors.push_back(replica.contents);
     }
-    bucket.work = process_group_->allreduce(tensors);
+    // See Note [DDP Communication Hook]
+    if (comm_hook_ == nullptr) {
+      bucket.work = process_group_->allreduce(tensors);
+    } else {
+      bucket.future_work = comm_hook_->operate(GradBucket(tensors));
+    }
   }
 }
 
@@ -924,8 +942,35 @@ void Reducer::finalize_backward() {
 
   // Wait for asynchronous reduction to complete and unflatten contents.
   for (auto& bucket : buckets_) {
-    TORCH_INTERNAL_ASSERT(bucket.work);
-    bucket.work->wait();
+    // See Note [DDP Communication Hook]
+    if (comm_hook_ == nullptr) {
+      TORCH_INTERNAL_ASSERT(bucket.work);
+      bucket.work->wait();
+    } else {
+      TORCH_INTERNAL_ASSERT(bucket.future_work);
+      bucket.future_work->wait();
+
+      auto future_result =
+          comm_hook_->process_future(bucket.future_work->value());
+
+      // Reinitialize bucket_views with the future_result by following
+      // the same logic in `inititalize_buckets`.
+      for (size_t i = 0; i < future_result.size(); i++) {
+        bucket.replicas[i].bucket_views.clear();
+        for (size_t j = 0; j < bucket.replicas[i].variables.size(); j++) {
+          const auto& v = bucket.replicas[i].variables[j];
+          const auto offset = bucket.replicas[i].offsets[j];
+          const auto length = bucket.replicas[i].lengths[j];
+          if (v.is_non_overlapping_and_dense()) {
+            bucket.replicas[i].bucket_views.push_back(
+                future_result[i].as_strided(v.sizes(), v.strides(), offset));
+          } else {
+            bucket.replicas[i].bucket_views.push_back(
+                future_result[i].narrow(0, offset, length).view(v.sizes()));
+          }
+        }
+      }
+    }
     if (!bucket.expect_sparse_gradient) {
       // We don't need to finalize the sparse bucket since the sparse grad and
       // the bucket essentially point to the same storage. As a result, once
@@ -1077,6 +1122,23 @@ std::vector<std::vector<size_t>> Reducer::rebuildBuckets() {
   rebuilt_param_indices_.clear();
 
   return rebuilt_bucket_indices;
+}
+
+// See Note [DDP Communication Hook]
+void Reducer::register_comm_hook(py::object state, py::object comm_hook) {
+  Reducer::register_comm_hook_internal(
+      std::make_unique<PythonCommHook>(std::move(state), std::move(comm_hook)));
+}
+
+// The reason we have an internal `register_comm_hook` that takes a
+// CommHookInterface (base class of PythonCommHook) as input is to enable
+// CppCommHook in the future.
+void Reducer::register_comm_hook_internal(
+    std::unique_ptr<CommHookInterface> iface) {
+  TORCH_CHECK(
+      comm_hook_ == nullptr, "register_comm_hook can only be called once.");
+
+  comm_hook_ = std::move(iface);
 }
 
 namespace {
