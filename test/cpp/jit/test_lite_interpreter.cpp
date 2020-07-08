@@ -4,6 +4,7 @@
 #include <torch/csrc/jit/api/module.h>
 #include <torch/csrc/jit/mobile/import.h>
 #include <torch/csrc/jit/mobile/module.h>
+#include <torch/csrc/jit/mobile/serializer.h>
 #include <torch/csrc/jit/serialization/import.h>
 #include <torch/custom_class.h>
 #include <torch/torch.h>
@@ -56,17 +57,27 @@ void testLiteInterpreterAdd() {
   auto ref = m.run_method("add_it", minput);
 
   std::stringstream ss;
+  std::stringstream ss2;
   m._save_for_mobile(ss);
   mobile::Module bc = _load_for_mobile(ss);
-  IValue res;
-  for (int i = 0; i < 3; ++i) {
-    auto bcinputs = inputs;
-    res = bc.run_method("add_it", bcinputs);
-  }
+  // testing serializer ----------------------------------------------------------------------
+  std::cerr << "parameter, orig: " << bc.parameters() << std::endl;
+  // run exportModule/writeArchive
+  // std::string filename = "/data/users/annshan/models/test_serial.bc";
+  torch::jit::mobile::ExportModule(bc, ss2, true);
+  // load again
+  mobile::Module bc2 = _load_for_mobile(ss2);
+  std::cerr << "parameter, after: " << bc2.parameters() << std::endl;
+  // end testing serializer ------------------------------------------------------------------
+  // IValue res;
+  // for (int i = 0; i < 3; ++i) {
+  //   auto bcinputs = inputs;
+  //   res = bc.run_method("add_it", bcinputs);
+  // }
 
-  auto resd = res.toTensor().item<float>();
-  auto refd = ref.toTensor().item<float>();
-  AT_ASSERT(resd == refd);
+  // auto resd = res.toTensor().item<float>();
+  // auto refd = ref.toTensor().item<float>();
+  // AT_ASSERT(resd == refd);
 }
 
 void testLiteInterpreterConv() {
